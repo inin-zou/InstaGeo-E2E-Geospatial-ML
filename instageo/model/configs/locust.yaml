@@ -18,12 +18,12 @@ distill:
     patch_size: 16
   phases:
     distill:
-      epochs: 3
+      num_epochs: 3
       lr: 1e-3
       freeze_teacher: true
       unfreeze_student_layers: 0
     finetune:
-      epochs: 2
+      num_epochs: 2
       lr: 1e-4
       unfreeze_student_layers: 2
 
