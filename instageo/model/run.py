@@ -150,7 +150,7 @@ def create_dataloader(
 
 
 class PrithviSegmentationModule(pl.LightningModule):
-    """Prithvi Segmentation PyTorch Lightning Module."""
+    """Prithvi Segmentation PyTorch Lightning Module with Distillation Support."""
 
     def __init__(
         self,
@@ -162,6 +162,8 @@ class PrithviSegmentationModule(pl.LightningModule):
         class_weights: List[float] = [1, 2],
         ignore_index: int = -100,
         weight_decay: float = 1e-2,
+        # ==== 新增蒸馏参数 ====
+        distill_config: Optional[dict] = None,
     ) -> None:
         """Initialization.
 
@@ -179,12 +181,20 @@ class PrithviSegmentationModule(pl.LightningModule):
             weight_decay (float): Weight decay for L2 regularization.
         """
         super().__init__()
+        self.distill_config = distill_config or {}
+        
         self.net = PrithviSeg(
             image_size=image_size,
             num_classes=num_classes,
             temporal_step=temporal_step,
             freeze_backbone=freeze_backbone,
+            # ==== 新增蒸馏参数传递 ====
+            use_distill=self.distill_enabled,
+            student_config=self.distill_config.get('student_config')
         )
+        # ==== 初始化损失函数 ====
+        self._init_loss_fn(class_weights, ignore_index)
+        
         weight_tensor = torch.tensor(class_weights).float() if class_weights else None
         self.criterion = nn.CrossEntropyLoss(
             ignore_index=ignore_index, weight=weight_tensor
@@ -192,33 +202,64 @@ class PrithviSegmentationModule(pl.LightningModule):
         self.learning_rate = learning_rate
         self.ignore_index = ignore_index
         self.weight_decay = weight_decay
+        self.save_hyperparameters()
+        
+    @property
+    def distill_enabled(self) -> bool:
+        return self.distill_config.get('enable', False)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Define the forward pass of the model.
+    def _init_loss_fn(self, class_weights, ignore_index):
+        if self.distill_enabled:
+            # 教师模型损失
+            self.teacher_criterion = nn.CrossEntropyLoss(
+                ignore_index=ignore_index, 
+                weight=torch.tensor(class_weights).float() if class_weights else None
+            )
+            # 蒸馏损失
+            self.distill_criterion = self._create_distill_loss()
+        else:
+            self.criterion = nn.CrossEntropyLoss(
+                ignore_index=ignore_index, 
+                weight=torch.tensor(class_weights).float() if class_weights else None
+            )
 
-        Args:
-            x (torch.Tensor): Input tensor for the model.
-
-        Returns:
-            torch.Tensor: Output tensor from the model.
-        """
-        return self.net(x)
+    def _create_distill_loss(self):
+        temp = self.distill_config.get('temperature', 3.0)
+        alpha = self.distill_config.get('alpha', 0.7)
+        
+        def _distill_loss(student_out, teacher_out, labels):
+            teacher_probs = F.softmax(teacher_out / temp, dim=1)
+            student_log_probs = F.log_softmax(student_out / temp, dim=1)
+            kl_loss = F.kl_div(student_log_probs, teacher_probs, reduction='batchmean') * (temp**2)
+            ce_loss = self.teacher_criterion(student_out, labels)
+            return alpha * kl_loss + (1 - alpha) * ce_loss
+        
+        return _distill_loss
 
     def training_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
-        """Perform a training step.
-
-        Args:
-            batch (Any): Input batch data.
-            batch_idx (int): Index of the batch.
-
-        Returns:
-            torch.Tensor: The loss value for the batch.
-        """
         inputs, labels = batch
-        outputs = self.forward(inputs)
-        loss = self.criterion(outputs, labels.long())
+        
+        if self.distill_enabled:
+            # ==== 蒸馏训练模式 ====
+            with torch.no_grad():
+                teacher_out = self.net.teacher(inputs)
+            student_out = self.net(inputs)  # 使用学生模型
+            loss = self.distill_criterion(student_out, teacher_out, labels)
+            outputs = student_out
+        else:
+            # ==== 常规训练模式 ====
+            outputs = self.net(inputs)
+            loss = self.criterion(outputs, labels.long())
+        
         self.log_metrics(outputs, labels, "train", loss)
         return loss
+    
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """支持模式切换的前向传播"""
+        if self.distill_enabled and self.training:
+            return self.net.student(x)  # 训练时使用学生模型
+        return self.net(x)  # 其他情况使用默认模型
 
     def validation_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
         """Perform a validation step.
@@ -265,20 +306,25 @@ class PrithviSegmentationModule(pl.LightningModule):
         probabilities = torch.nn.functional.softmax(prediction, dim=1)[:, 1, :, :]
         return probabilities
 
-    def configure_optimizers(
-        self,
-    ) -> Tuple[
-        List[torch.optim.Optimizer], List[torch.optim.lr_scheduler._LRScheduler]
-    ]:
-        """Configure the model's optimizers and learning rate schedulers.
-
-        Returns:
-            Tuple[List[torch.optim.Optimizer], List[torch.optim.lr_scheduler]]:
-            A tuple containing the list of optimizers and the list of LR schedulers.
-        """
-        optimizer = torch.optim.AdamW(
-            self.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay
-        )
+    def configure_optimizers(self):
+        """优化器配置支持分层学习率"""
+        # ==== 分层学习率设置 ====
+        if self.distill_enabled:
+            student_params = [
+                {'params': self.net.student.parameters(), 'lr': self.learning_rate},
+                {'params': self.net.distill_head.parameters(), 'lr': self.learning_rate}
+            ]
+            optimizer = torch.optim.AdamW(
+                student_params, 
+                weight_decay=self.weight_decay
+            )
+        else:
+            optimizer = torch.optim.AdamW(
+                self.parameters(), 
+                lr=self.learning_rate, 
+                weight_decay=self.weight_decay
+            )
+            
         scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
             optimizer, T_0=10, T_mult=2, eta_min=0
         )
@@ -523,6 +569,8 @@ def main(cfg: DictConfig) -> None:
 
     if cfg.mode == "train":
         check_required_flags(["root_dir", "train_filepath", "valid_filepath"], cfg)
+        
+        
         train_dataset = InstaGeoDataset(
             filename=train_filepath,
             input_root=root_dir,
@@ -562,37 +610,84 @@ def main(cfg: DictConfig) -> None:
         valid_loader = create_dataloader(
             valid_dataset, batch_size=batch_size, shuffle=False, num_workers=1
         )
-        model = PrithviSegmentationModule(
-            image_size=IM_SIZE,
-            learning_rate=cfg.train.learning_rate,
-            freeze_backbone=cfg.model.freeze_backbone,
-            num_classes=cfg.model.num_classes,
-            temporal_step=cfg.dataloader.temporal_dim,
-            class_weights=cfg.train.class_weights,
-            ignore_index=cfg.train.ignore_index,
-            weight_decay=cfg.train.weight_decay,
-        )
-        hydra_out_dir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
-        checkpoint_callback = ModelCheckpoint(
-            monitor="val_mIoU",
-            dirpath=hydra_out_dir,
-            filename="instageo_epoch-{epoch:02d}-val_iou-{val_mIoU:.2f}",
-            auto_insert_metric_name=False,
-            mode="max",
-            save_top_k=3,
-        )
+        
+        # ==== 分阶段训练逻辑 ====
+        phases = ['distill', 'finetune'] if cfg.distill.enabled else ['train']
+        
+        for phase in phases:
+            if cfg.distill.enabled:
+                phase_config = OmegaConf.create({ 
+                    'train': cfg.distill.phases.get(phase, {}),
+                    'model': {'freeze_backbone': cfg.distill.phases[phase].freeze_teacher}
+                })
+                current_cfg = OmegaConf.merge(cfg, phase_config)
+                log.info(f"Starting {phase} phase training...")
+                
+                # ==== 阶段特定配置 ====
+                model = PrithviSegmentationModule(
+                    image_size=IM_SIZE,
+                    learning_rate=current_cfg.train.learning_rate,
+                    freeze_backbone=current_cfg.model.freeze_backbone,
+                    num_classes=cfg.model.num_classes,
+                    temporal_step=cfg.dataloader.temporal_dim,
+                    class_weights=cfg.train.class_weights,
+                    ignore_index=cfg.train.ignore_index,
+                    weight_decay=cfg.train.weight_decay,
+                    distill_config=OmegaConf.to_container(cfg.distill)
+                )
+                
+                # ==== 参数冻结控制 ====
+                model.net.set_requires_grad('teacher', current_cfg.distill.freeze_teacher)
+                model.net.set_requires_grad('student', True)
+                
+                # ==== 解冻指定层数 ====
+                unfreeze_layers = current_cfg.distill.unfreeze_student_layers
+                for block in model.net.student.blocks[-unfreeze_layers:]:
+                    for param in block.parameters():
+                        param.requires_grad = True
+            else:
+                model = PrithviSegmentationModule(
+                    image_size=IM_SIZE,
+                    learning_rate=cfg.train.learning_rate,
+                    freeze_backbone=cfg.model.freeze_backbone,
+                    num_classes=cfg.model.num_classes,
+                    temporal_step=cfg.dataloader.temporal_dim,
+                    class_weights=cfg.train.class_weights,
+                    ignore_index=cfg.train.ignore_index,
+                    weight_decay=cfg.train.weight_decay,
+                )
+                
+            hydra_out_dir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
+            checkpoint_callback = ModelCheckpoint(
+                monitor="val_mIoU",
+                dirpath=hydra_out_dir,
+                filename="instageo_epoch-{epoch:02d}-val_iou-{val_mIoU:.2f}",
+                auto_insert_metric_name=False,
+                mode="max",
+                save_top_k=3,
+            )
 
-        logger = TensorBoardLogger(hydra_out_dir, name="instageo")
+            logger = TensorBoardLogger(hydra_out_dir, name="instageo")
 
-        trainer = pl.Trainer(
-            accelerator=get_device(),
-            max_epochs=cfg.train.num_epochs,
-            callbacks=[checkpoint_callback],
-            logger=logger,
-        )
+            # ==== 训练器配置 ====
+            trainer = pl.Trainer(
+                accelerator=get_device(),
+                max_epochs=current_cfg.train.num_epochs,
+                callbacks=[
+                    ModelCheckpoint(
+                        monitor="val_mIoU",
+                        dirpath=hydra_out_dir,
+                        filename=f"{phase}_epoch-{{epoch:02d}}-val_iou-{{val_mIoU:.2f}}",
+                        save_top_k=2,
+                        mode="max"
+                    )
+                ],
+                logger=TensorBoardLogger(hydra_out_dir, name=phase),
+                enable_model_summary=True
+            )
 
-        # run training and validation
-        trainer.fit(model, train_loader, valid_loader)
+            # run training and validation
+            trainer.fit(model, train_loader, valid_loader)
 
     elif cfg.mode == "eval":
         check_required_flags(["root_dir", "test_filepath", "checkpoint_path"], cfg)

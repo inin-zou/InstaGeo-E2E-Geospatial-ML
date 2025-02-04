@@ -4,7 +4,28 @@ valid_filepath: null
 train_filepath: null
 test_filepath: null
 checkpoint_path: null
-mode: train # train or eval
+mode: train # train/distill/finetune/eval
+
+# 新增蒸馏配置块
+distill:
+  enable: true
+  temperature: 3.0
+  alpha: 0.7
+  student_config:
+    embed_dim: 256
+    depth: 6
+    num_heads: 8
+    patch_size: 16
+  phases:
+    distill:
+      epochs: 3
+      lr: 1e-3
+      freeze_teacher: true
+      unfreeze_student_layers: 0
+    finetune:
+      epochs: 2
+      lr: 1e-4
+      unfreeze_student_layers: 2
 
 train:
   learning_rate: 0.0001
@@ -51,3 +72,4 @@ test:
   crop_size: 256
   stride: 256
   mask_cloud: False
+

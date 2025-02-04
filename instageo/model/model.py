@@ -116,30 +116,69 @@ class Norm2D(nn.Module):
         x = x.permute(0, 3, 1, 2).contiguous()
         return x
 
+# NEW: 轻量级学生模型
+class TinyViT(nn.Module):
+    """Lightweight ViT for knowledge distillation"""
+    def __init__(self, 
+                 embed_dim: int = 256, 
+                 depth: int = 6,
+                 num_heads: int = 8,
+                 image_size: int = 224,
+                 patch_size: int = 16):
+        super().__init__()
+        self.patch_size = patch_size
+        self.patch_embed = nn.Conv2d(3, embed_dim, kernel_size=patch_size, stride=patch_size)
+        self.blocks = nn.ModuleList([
+            Block(embed_dim, num_heads, mlp_ratio=4, qkv_bias=True) 
+            for _ in range(depth)
+        ])
+        self.norm = nn.LayerNorm(embed_dim)
+        self.pos_embed = nn.Parameter(torch.zeros(1, (image_size//patch_size)**2 + 1, embed_dim))
+        
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.patch_embed(x)  # [B, C, H/p, W/p]
+        x = x.flatten(2).transpose(1, 2)  # [B, L, C]
+        x = x + self.pos_embed[:, 1:, :]
+        for blk in self.blocks:
+            x = blk(x)
+        return self.norm(x)
 
 class PrithviSeg(nn.Module):
-    """Prithvi Segmentation Model."""
-
+    """Prithvi Segmentation Model with Knowledge Distillation Support"""
     def __init__(
         self,
         temporal_step: int = 1,
         image_size: int = 224,
         num_classes: int = 2,
         freeze_backbone: bool = True,
-    ) -> None:
-        """Initialize the PrithviSeg model.
-
-        This model is designed for image segmentation tasks on remote sensing data.
-        It loads Prithvi configuration and weights and sets up a ViTEncoder backbone
-        along with a segmentation head.
-
-        Args:
-            temporal_step (int): Size of temporal dimension.
-            image_size (int): Size of input image.
-            num_classes (int): Number of target classes.
-            freeze_backbone (bool): Flag to freeze ViT transformer backbone weights.
-        """
+        # NEW: 蒸馏相关参数
+        use_distill: bool = False,
+        student_config: Optional[dict] = None,
+    ):
         super().__init__()
+        self.use_distill = use_distill
+        self.image_size = image_size
+        
+        # 初始化教师模型
+        self.teacher = self._init_teacher(
+            temporal_step, image_size, freeze_backbone
+        )
+        
+        # NEW: 初始化学生模型
+        self.student = None
+        if use_distill:
+            student_args = student_config or {
+                'embed_dim': 256,
+                'depth': 6,
+                'num_heads': 8,
+                'image_size': image_size,
+                'patch_size': 16
+            }
+            self.student = TinyViT(**student_args)
+            self._init_distill_head(num_classes)
+            
+    def _init_teacher(self, temporal_step, image_size, freeze_backbone):
+        # [原有教师模型初始化代码，保持参数加载逻辑不变]
         weights_dir = Path.home() / ".instageo" / "prithvi"
         weights_dir.mkdir(parents=True, exist_ok=True)
         weights_path = weights_dir / "Prithvi_EO_V1_100M.pt"
@@ -157,15 +196,15 @@ class PrithviSeg(nn.Module):
             model_config = yaml.safe_load(f)
 
         model_args = model_config["model_args"]
-
         model_args["num_frames"] = temporal_step
         model_args["img_size"] = image_size
         self.model_args = model_args
-        # instantiate model
+        
         model = ViTEncoder(**model_args)
         if freeze_backbone:
             for param in model.parameters():
                 param.requires_grad = False
+                
         filtered_checkpoint_state_dict = {
             key[len("encoder.") :]: value
             for key, value in checkpoint.items()
@@ -174,20 +213,12 @@ class PrithviSeg(nn.Module):
         filtered_checkpoint_state_dict["pos_embed"] = torch.zeros(
             1, (temporal_step * (image_size // 16) ** 2 + 1), 768
         )
-        _ = model.load_state_dict(filtered_checkpoint_state_dict)
+        model.load_state_dict(filtered_checkpoint_state_dict)
+        return model
 
-        self.prithvi_100M_backbone = model
-
+    # NEW: 初始化蒸馏分割头
+    def _init_distill_head(self, num_classes):
         def upscaling_block(in_channels: int, out_channels: int) -> nn.Module:
-            """Upscaling block.
-
-            Args:
-                in_channels (int): number of input channels.
-                out_channels (int): number of output channels.
-
-            Returns:
-                An upscaling block configured to upscale spatially.
-            """
             return nn.Sequential(
                 nn.ConvTranspose2d(
                     in_channels=in_channels,
@@ -207,35 +238,81 @@ class PrithviSeg(nn.Module):
                 nn.ReLU(),
             )
 
-        embed_dims = [
-            (model_args["embed_dim"] * model_args["num_frames"]) // (2**i)
-            for i in range(5)
-        ]
-        self.segmentation_head = nn.Sequential(
-            *[upscaling_block(embed_dims[i], embed_dims[i + 1]) for i in range(4)],
-            nn.Conv2d(
-                kernel_size=1, in_channels=embed_dims[-1], out_channels=num_classes
-            ),
+        embed_dim = self.student.embed_dim if hasattr(self.student, 'embed_dim') else 256
+        self.distill_head = nn.Sequential(
+            *[upscaling_block(embed_dim//(2**i), embed_dim//(2**(i+1))) for i in range(4)],
+            nn.Conv2d(embed_dim//16, num_classes, kernel_size=1)
         )
+
+    # NEW: 蒸馏损失函数
+    def distill_loss(self, student_out, teacher_out, labels, temp=3.0, alpha=0.7):
+        teacher_probs = F.softmax(teacher_out / temp, dim=1)
+        student_log_probs = F.log_softmax(student_out / temp, dim=1)
+        kl_loss = F.kl_div(student_log_probs, teacher_probs, reduction='batchmean') * (temp**2)
+        ce_loss = F.cross_entropy(student_out, labels)
+        return alpha * kl_loss + (1 - alpha) * ce_loss
 
     def forward(self, img: torch.Tensor) -> torch.Tensor:
-        """Define the forward pass of the model.
+        if self.use_distill and self.student is not None:
+            # 学生模式
+            features = self.student(img)
+            features = features.permute(0, 2, 1).reshape(
+                img.size(0), -1, 
+                self.image_size//self.student.patch_size,
+                self.image_size//self.student.patch_size
+            )
+            return self.distill_head(features)
+        else:
+            # 教师模式
+            features = self.teacher(img)
+            reshaped_features = features[:, 1:, :]
+            feature_img_side_length = int(
+                np.sqrt(reshaped_features.shape[1] // self.model_args["num_frames"])
+            )
+            reshaped_features = reshaped_features.permute(0, 2, 1).reshape(
+                features.shape[0], -1, feature_img_side_length, feature_img_side_length
+            )
+            return self.segmentation_head(reshaped_features)
 
-        Args:
-            img (torch.Tensor): The input tensor representing the image.
-
-        Returns:
-            torch.Tensor: Output tensor after image segmentation.
-        """
-        features = self.prithvi_100M_backbone(img)
-        # drop cls token
-        reshaped_features = features[:, 1:, :]
-        feature_img_side_length = int(
-            np.sqrt(reshaped_features.shape[1] // self.model_args["num_frames"])
+    # NEW: 模型压缩方法
+    def quantize_model(self, dtype=torch.qint8):
+        return torch.quantization.quantize_dynamic(
+            self.student,
+            {nn.Linear, nn.Conv2d},
+            dtype=dtype
         )
-        reshaped_features = reshaped_features.permute(0, 2, 1).reshape(
-            features.shape[0], -1, feature_img_side_length, feature_img_side_length
-        )
 
-        out = self.segmentation_head(reshaped_features)
-        return out
+    # NEW: 参数冻结控制
+    def set_requires_grad(self, model_part: str, requires_grad: bool):
+        """控制不同部分的梯度计算"""
+        if model_part == 'teacher':
+            for param in self.teacher.parameters():
+                param.requires_grad = requires_grad
+        elif model_part == 'student':
+            for param in self.student.parameters():
+                param.requires_grad = requires_grad
+        elif model_part == 'distill_head':
+            for param in self.distill_head.parameters():
+                param.requires_grad = requires_grad
+
+    # NEW: 导出ONNX
+    def export_onnx(self, student_model=True, output_path="model.onnx"):
+        dummy_input = torch.randn(1, 3, self.image_size, self.image_size)
+        if student_model:
+            torch.onnx.export(
+                self.student,
+                dummy_input,
+                output_path,
+                opset_version=13,
+                input_names=['input'],
+                output_names=['output']
+            )
+        else:
+            torch.onnx.export(
+                self.teacher,
+                dummy_input,
+                output_path,
+                opset_version=13,
+                input_names=['input'],
+                output_names=['output']
+            )
