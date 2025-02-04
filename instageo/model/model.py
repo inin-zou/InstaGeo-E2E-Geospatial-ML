@@ -18,7 +18,7 @@
 # ------------------------------------------------------------------------------
 
 """Model Module."""
-
+from typing import Optional, Tuple, Dict, List
 import os
 import time
 from pathlib import Path
