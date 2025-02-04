@@ -575,8 +575,26 @@ def main(cfg: DictConfig) -> None:
         
         
         train_dataset = InstaGeoDataset(
-            filename=train_filepath,
-            input_root=root_dir,
+            filename=cfg.train_filepath,
+            input_root=cfg.root_dir,
+            preprocess_func=partial(
+                process_and_augment,
+                mean=MEAN,
+                std=STD,
+                temporal_size=TEMPORAL_SIZE,
+                im_size=IM_SIZE,
+            ),
+            bands=BANDS,
+            replace_label=cfg.dataloader.replace_label,
+            reduce_to_zero=cfg.dataloader.reduce_to_zero,
+            no_data_value=cfg.dataloader.no_data_value,
+            constant_multiplier=cfg.dataloader.constant_multiplier,
+        ) 
+
+
+        valid_dataset = InstaGeoDataset(
+            filename=cfg.valid_filepath,
+            input_root=cfg.root_dir,
             preprocess_func=partial(
                 process_and_augment,
                 mean=MEAN,
@@ -591,22 +609,6 @@ def main(cfg: DictConfig) -> None:
             constant_multiplier=cfg.dataloader.constant_multiplier,
         )
 
-        valid_dataset = InstaGeoDataset(
-            filename=valid_filepath,
-            input_root=root_dir,
-            preprocess_func=partial(
-                process_and_augment,
-                mean=MEAN,
-                std=STD,
-                temporal_size=TEMPORAL_SIZE,
-                im_size=IM_SIZE,
-            ),
-            bands=BANDS,
-            replace_label=cfg.dataloader.replace_label,
-            reduce_to_zero=cfg.dataloader.reduce_to_zero,
-            no_data_value=cfg.dataloader.no_data_value,
-            constant_multiplier=cfg.dataloader.constant_multiplier,
-        )
         train_loader = create_dataloader(
             train_dataset, batch_size=batch_size, shuffle=True, num_workers=1
         )
