@@ -621,18 +621,26 @@ def main(cfg: DictConfig) -> None:
         
         # ==== 分阶段训练逻辑 ====
         phases = ['distill', 'finetune'] if cfg.distill.enable else ['train']
-
+        
+        
         for phase in phases:
             # 阶段配置合并
             if cfg.distill.enable:
+                # 将当前阶段的蒸馏配置转换为普通字典
+                phase_dict = OmegaConf.to_container(cfg.distill.phases.get(phase, {}))
+                # 过滤，只保留在 cfg.train 中已经存在的键
+                allowed_overrides = {k: v for k, v in phase_dict.items() if k in cfg.train}
+                
+                # 构造阶段配置：将 allowed_overrides 合并到原有的 cfg.train 中，
+                # 同时将模型配置中的 freeze_backbone 根据当前阶段配置进行更新
                 phase_config = {
-                    'train': OmegaConf.merge(cfg.train, cfg.distill.phases.get(phase, {})),
+                    'train': OmegaConf.merge(cfg.train, OmegaConf.create(allowed_overrides)),
                     'model': OmegaConf.merge(cfg.model, {
                         'freeze_backbone': cfg.distill.phases[phase].get('freeze_teacher', True)
                     })
                 }
                 current_cfg = OmegaConf.merge(cfg, phase_config)
-                
+
                 # 模型初始化
                 model = PrithviSegmentationModule(
                     image_size=IM_SIZE,
