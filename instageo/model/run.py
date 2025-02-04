@@ -272,7 +272,10 @@ class PrithviSegmentationModule(pl.LightningModule):
             torch.Tensor: The loss value for the batch.
         """
         inputs, labels = batch
-        outputs = self.forward(inputs)
+        if self.distill_enabled:
+            outputs = self.net.student(inputs)
+        else:
+            outputs = self.net(inputs)
         loss = self.criterion(outputs, labels.long())
         self.log_metrics(outputs, labels, "val", loss)
         return loss
@@ -612,10 +615,10 @@ def main(cfg: DictConfig) -> None:
         )
         
         # ==== 分阶段训练逻辑 ====
-        phases = ['distill', 'finetune'] if cfg.distill.enabled else ['train']
+        phases = ['distill', 'finetune'] if cfg.distill.enable else ['train']
         
         for phase in phases:
-            if cfg.distill.enabled:
+            if cfg.distill.enable:
                 phase_config = OmegaConf.create({ 
                     'train': cfg.distill.phases.get(phase, {}),
                     'model': {'freeze_backbone': cfg.distill.phases[phase].freeze_teacher}
