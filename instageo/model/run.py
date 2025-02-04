@@ -616,17 +616,19 @@ def main(cfg: DictConfig) -> None:
         
         # ==== 分阶段训练逻辑 ====
         phases = ['distill', 'finetune'] if cfg.distill.enable else ['train']
-        
+
         for phase in phases:
+            # 阶段配置合并
             if cfg.distill.enable:
-                phase_config = OmegaConf.create({ 
-                    'train': cfg.distill.phases.get(phase, {}),
-                    'model': {'freeze_backbone': cfg.distill.phases[phase].freeze_teacher}
-                })
+                phase_config = {
+                    'train': OmegaConf.merge(cfg.train, cfg.distill.phases.get(phase, {})),
+                    'model': OmegaConf.merge(cfg.model, {
+                        'freeze_backbone': cfg.distill.phases[phase].get('freeze_teacher', True)
+                    })
+                }
                 current_cfg = OmegaConf.merge(cfg, phase_config)
-                log.info(f"Starting {phase} phase training...")
                 
-                # ==== 阶段特定配置 ====
+                # 模型初始化
                 model = PrithviSegmentationModule(
                     image_size=IM_SIZE,
                     learning_rate=current_cfg.train.learning_rate,
@@ -639,59 +641,50 @@ def main(cfg: DictConfig) -> None:
                     distill_config=OmegaConf.to_container(cfg.distill)
                 )
                 
-                # ==== 参数冻结控制 ====
-                model.net.set_requires_grad('teacher', current_cfg.distill.freeze_teacher)
+                # 参数冻结
+                model.net.set_requires_grad('teacher', current_cfg.distill.phases[phase].freeze_teacher)
                 model.net.set_requires_grad('student', True)
                 
-                # ==== 解冻指定层数 ====
-                unfreeze_layers = current_cfg.distill.unfreeze_student_layers
-                for block in model.net.student.blocks[-unfreeze_layers:]:
-                    for param in block.parameters():
-                        param.requires_grad = True
+                # 安全解冻层
+                unfreeze_layers = current_cfg.distill.phases[phase].unfreeze_student_layers
+                if unfreeze_layers > 0:
+                    start_idx = max(0, len(model.net.student.blocks) - unfreeze_layers)
+                    for block in model.net.student.blocks[start_idx:]:
+                        for param in block.parameters():
+                            param.requires_grad = True
             else:
-                model = PrithviSegmentationModule(
-                    image_size=IM_SIZE,
-                    learning_rate=cfg.train.learning_rate,
-                    freeze_backbone=cfg.model.freeze_backbone,
-                    num_classes=cfg.model.num_classes,
-                    temporal_step=cfg.dataloader.temporal_dim,
-                    class_weights=cfg.train.class_weights,
-                    ignore_index=cfg.train.ignore_index,
-                    weight_decay=cfg.train.weight_decay,
-                )
-                
+                model = PrithviSegmentationModule(...)
+            
+            # 训练器配置
             hydra_out_dir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
+            phase_out_dir = os.path.join(hydra_out_dir, phase)
+            os.makedirs(phase_out_dir, exist_ok=True)
+            
             checkpoint_callback = ModelCheckpoint(
+                dirpath=phase_out_dir,
+                filename=f"{phase}_epoch={{epoch:02d}}-val_iou={{val_mIoU:.2f}}",
                 monitor="val_mIoU",
-                dirpath=hydra_out_dir,
-                filename="instageo_epoch-{epoch:02d}-val_iou-{val_mIoU:.2f}",
-                auto_insert_metric_name=False,
                 mode="max",
-                save_top_k=3,
+                save_top_k=2
             )
-
-            logger = TensorBoardLogger(hydra_out_dir, name="instageo")
-
-            # ==== 训练器配置 ====
+            
+            logger = TensorBoardLogger(
+                hydra_out_dir,
+                name="logs",
+                version=phase
+            )
+            
             trainer = pl.Trainer(
                 accelerator=get_device(),
                 max_epochs=current_cfg.train.num_epochs,
-                callbacks=[
-                    ModelCheckpoint(
-                        monitor="val_mIoU",
-                        dirpath=hydra_out_dir,
-                        filename=f"{phase}_epoch-{{epoch:02d}}-val_iou-{{val_mIoU:.2f}}",
-                        save_top_k=2,
-                        mode="max"
-                    )
-                ],
-                logger=TensorBoardLogger(hydra_out_dir, name=phase),
+                callbacks=[checkpoint_callback],
+                logger=logger,
                 enable_model_summary=True
             )
-
-            # run training and validation
+            
+            # 启动训练
             trainer.fit(model, train_loader, valid_loader)
-
+    
     elif cfg.mode == "eval":
         check_required_flags(["root_dir", "test_filepath", "checkpoint_path"], cfg)
         test_dataset = InstaGeoDataset(
