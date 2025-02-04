@@ -608,6 +608,9 @@ def main(cfg: DictConfig) -> None:
             no_data_value=cfg.dataloader.no_data_value,
             constant_multiplier=cfg.dataloader.constant_multiplier,
         )
+        # 调试输出，确认数据集大小
+        print("Number of train samples:", len(train_dataset))
+        print("Number of valid samples:", len(valid_dataset))
 
         train_loader = create_dataloader(
             train_dataset, batch_size=batch_size, shuffle=True, num_workers=1
