@@ -197,7 +197,7 @@ class PrithviSegmentationModule(pl.LightningModule):
         
         weight_tensor = torch.tensor(class_weights).float() if class_weights else None
         self.criterion = nn.CrossEntropyLoss(
-            ignore_index=ignore_index, weight=weight_tensor
+            ignore_index=-1, weight=weight_tensor
         )
         self.learning_rate = learning_rate
         self.ignore_index = ignore_index
@@ -251,7 +251,7 @@ class PrithviSegmentationModule(pl.LightningModule):
             print(f"Training Step - Labels unique values: {torch.unique(labels)}")
 
         # 调整标签维度和类型
-        labels = labels.squeeze().to(torch.int64)  # 确保标签是1D LongTensor
+        labels = labels.to(torch.int64)  # 确保数据类型正确
 
         if self.distill_enabled:
             with torch.no_grad():
@@ -290,7 +290,8 @@ class PrithviSegmentationModule(pl.LightningModule):
             print(f"Training Step - Labels unique values: {torch.unique(labels)}")
 
         # 调整标签维度和类型
-        labels = labels.squeeze().to(torch.int64)  # 确保标签是1D LongTensor
+        labels = labels.to(torch.int64)  # 确保数据类型正确
+
 
         if self.distill_enabled:
             outputs = self.net.student(inputs)
