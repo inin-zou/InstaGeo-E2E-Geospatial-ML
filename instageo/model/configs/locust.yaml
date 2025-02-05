@@ -16,6 +16,7 @@ distill:
     depth: 6
     num_heads: 8
     patch_size: 16
+    image_size: 256
   phases:
     distill:
       num_epochs: 3
