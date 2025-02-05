@@ -167,7 +167,7 @@ class TinyViT(nn.Module):
         self.num_patches = (image_size // patch_size) ** 2
 
         # Patch Embedding
-        self.patch_embed = nn.Conv2d(6, embed_dim, kernel_size=patch_size, stride=patch_size)
+        self.patch_embed = nn.Conv2d(6 * 3, embed_dim, kernel_size=patch_size, stride=patch_size)
 
         # 位置编码
         self.pos_embed = nn.Parameter(
@@ -198,12 +198,8 @@ class TinyViT(nn.Module):
         """Forward pass for TinyViT student model."""
         batch_size = img.shape[0]
 
-        # 处理 `num_frames` 维度，将 `[B, C, T, H, W]` 变为 `[B, C*T, H, W]`
-        if img.ndim == 5:
-            img = img.view(batch_size, 6 * 3, img.shape[3], img.shape[4])  # `[B, 18, H, W]`
-
         # Patch embedding
-        x = self.patch_embed(img)  # 现在 img 形状是 `[B, 18, H, W]`
+        x = self.patch_embed(img)  # (B, C, H/P, W/P)
         x = x.flatten(2).transpose(1, 2)  # (B, num_patches, embed_dim)
 
         # Add positional encoding
@@ -224,7 +220,6 @@ class TinyViT(nn.Module):
         out = self.segmentation_head(x)  # (B, num_classes, H, W)
 
         return out
-
 
 
 class PrithviSeg(nn.Module):
