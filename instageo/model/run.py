@@ -228,12 +228,14 @@ class PrithviSegmentationModule(pl.LightningModule):
                 ignore_index=ignore_index,
                 weight=weight_tensor
             )
+            self.distill_loss = self._create_distill_loss()  # 先初始化 distill_loss
             self.distill_criterion = self.distill_loss  # 绑定蒸馏损失函数
         else:
             self.criterion = nn.CrossEntropyLoss(
                 ignore_index=ignore_index, 
                 weight=weight_tensor
             )
+
 
 
     def _create_distill_loss(self):
