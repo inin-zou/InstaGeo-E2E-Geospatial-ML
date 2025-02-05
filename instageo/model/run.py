@@ -245,21 +245,23 @@ class PrithviSegmentationModule(pl.LightningModule):
 
     def training_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
         inputs, labels = batch
-        
+
+        labels = labels.to(torch.int64)
+
         if self.distill_enabled:
             # ==== 蒸馏训练模式 ====
             with torch.no_grad():
                 teacher_out = self.net.teacher(inputs)
-            student_out = self.net(inputs)  # 使用学生模型
+            student_out = self.net(inputs)
             loss = self.distill_criterion(student_out, teacher_out, labels)
-            outputs = student_out
         else:
-            # ==== 常规训练模式 ====
+             # ==== 常规训练模式 ====
             outputs = self.net(inputs)
-            loss = self.criterion(outputs, labels.long())
-        
+            loss = self.criterion(outputs, labels)
+
         self.log_metrics(outputs, labels, "train", loss)
         return loss
+
     
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -280,21 +282,22 @@ class PrithviSegmentationModule(pl.LightningModule):
         """
         inputs, labels = batch
         
-        # 确保 labels 是 int64 类型
-        labels = labels.to(torch.int64)  # 确保是整数索引，不是 float
+        # 确保 labels 是 torch.int64
+        labels = labels.to(torch.int64)
 
-        # 选择使用蒸馏模型或普通模型
+        # 选择模型输出
         if self.distill_enabled:
             outputs = self.net.student(inputs)
         else:
             outputs = self.net(inputs)
 
-        # 计算损失
-        loss = self.criterion(outputs, labels) 
+        # 确保 outputs 是 raw logits，不做 softmax
+        loss = self.criterion(outputs, labels)
 
-        # 记录指标
+        # 记录日志
         self.log_metrics(outputs, labels, "val", loss)
         return loss
+
 
 
     def test_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
