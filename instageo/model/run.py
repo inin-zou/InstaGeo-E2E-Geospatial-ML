@@ -213,14 +213,14 @@ class PrithviSegmentationModule(pl.LightningModule):
             # 教师模型损失
             self.teacher_criterion = nn.CrossEntropyLoss(
                 ignore_index=ignore_index, 
-                weight=torch.tensor(class_weights).float() if class_weights else None
+                weight=torch.tensor(class_weights) if class_weights else None
             )
             # 蒸馏损失
             self.distill_criterion = self._create_distill_loss()
         else:
             self.criterion = nn.CrossEntropyLoss(
                 ignore_index=ignore_index, 
-                weight=torch.tensor(class_weights).float() if class_weights else None
+                weight=torch.tensor(class_weights) if class_weights else None
             )
 
     def _create_distill_loss(self):
