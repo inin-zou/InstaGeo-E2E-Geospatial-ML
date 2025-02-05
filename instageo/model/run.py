@@ -252,7 +252,7 @@ class PrithviSegmentationModule(pl.LightningModule):
             print(f"Training Step - Labels unique values: {torch.unique(labels)}")
 
         # 调整标签维度和类型
-        labels = labels.float()  # 确保数据类型正确
+        labels = labels.long()  # 确保数据类型正确
 
         if self.distill_enabled:
             with torch.no_grad():
@@ -292,7 +292,7 @@ class PrithviSegmentationModule(pl.LightningModule):
             print(f"Training Step - Labels unique values: {torch.unique(labels)}")
 
         # 调整标签维度和类型
-        labels = labels.float()  # 确保数据类型正确
+        labels = labels.long()  # 确保数据类型正确
 
 
         if self.distill_enabled:
