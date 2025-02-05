@@ -156,29 +156,50 @@ class TinyViT(nn.Module):
                  embed_dim: int = 256, 
                  depth: int = 6,
                  num_heads: int = 8,
-                 image_size: int = 224,
-                 patch_size: int = 16):
+                 image_size: int = 224,  # 需要支持 256x256
+                 patch_size: int = 16,
+                 num_classes: int = 2):  # 添加类别数
         super().__init__()
         self.patch_size = patch_size
         self.patch_embed = nn.Conv2d(3, embed_dim, kernel_size=patch_size, stride=patch_size)
+        
         self.blocks = nn.ModuleList([
             Block(embed_dim, num_heads, mlp_ratio=4, qkv_bias=True) 
             for _ in range(depth)
         ])
+        
         self.norm = nn.LayerNorm(embed_dim)
         self.pos_embed = nn.Parameter(torch.zeros(1, (image_size//patch_size)**2 + 1, embed_dim))
+
+        # 添加一个 1x1 卷积层，把 embed_dim 变成 num_classes（2 类）
+        self.head = nn.Conv2d(embed_dim, num_classes, kernel_size=1)
+
+    def forward(self, x):
+        # 提取 patch
+        x = self.patch_embed(x)  # 变成 [batch, embed_dim, H/patch_size, W/patch_size]
         
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # 如果输入为 5D，则只取第一个时间帧
-        if x.ndim == 5:
-            # x shape: [B, T, C, H, W] → 选择第一个帧 → [B, C, H, W]
-            x = x[:, 0, :, :, :]
-        x = self.patch_embed(x)  # 输出形状 [B, embed_dim, H/patch_size, W/patch_size]
-        x = x.flatten(2).transpose(1, 2)  # 转换为 [B, L, embed_dim], L = (H/patch_size)*(W/patch_size)
-        x = x + self.pos_embed[:, 1:, :]   # 加上位置嵌入（忽略分类 token）
+        B, C, H, W = x.shape  # 获取当前 feature map 尺寸
+        x = x.flatten(2).transpose(1, 2)  # [batch, num_patches, embed_dim]
+        
+        x = x + self.pos_embed[:, :x.size(1), :]
+        
+        # 通过 Transformer blocks
         for blk in self.blocks:
             x = blk(x)
-        return self.norm(x)
+
+        # 归一化
+        x = self.norm(x)
+
+        # 变回 CNN 格式
+        x = x.transpose(1, 2).view(B, C, H, W)  # 变回 [batch, embed_dim, H, W]
+
+        # 用 1x1 卷积映射到类别通道
+        x = self.head(x)  # 变成 [batch, num_classes, H, W]
+
+        # 上采样到 256x256
+        x = F.interpolate(x, size=(256, 256), mode="bilinear", align_corners=False)  # 确保输出大小
+
+        return x  # 输出 [batch, num_classes, 256, 256]
 
 class PrithviSeg(nn.Module):
     """Prithvi Segmentation Model with Knowledge Distillation Support"""
