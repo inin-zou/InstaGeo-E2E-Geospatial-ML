@@ -228,13 +228,20 @@ class PrithviSegmentationModule(pl.LightningModule):
         alpha = self.distill_config.get('alpha', 0.7)
         
         def _distill_loss(student_out, teacher_out, labels):
-            teacher_probs = F.softmax(teacher_out / temp, dim=1)
-            student_log_probs = F.log_softmax(student_out / temp, dim=1)
+            labels = labels.long()  # 确保 labels 是整数索引
+            teacher_probs = F.softmax(teacher_out / temp, dim=1)  # 计算教师概率
+            student_log_probs = F.log_softmax(student_out / temp, dim=1)  # 计算学生 log 概率
+
+            # 确保 KL Loss 计算正确
             kl_loss = F.kl_div(student_log_probs, teacher_probs, reduction='batchmean') * (temp**2)
-            ce_loss = self.teacher_criterion(student_out, labels)
+
+            # 确保 `cross_entropy` 计算正确
+            ce_loss = F.cross_entropy(student_out, labels)
+
             return alpha * kl_loss + (1 - alpha) * ce_loss
         
         return _distill_loss
+
 
     def training_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
         inputs, labels = batch

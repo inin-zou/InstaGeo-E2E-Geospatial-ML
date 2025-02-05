@@ -283,6 +283,7 @@ class PrithviSeg(nn.Module):
 
     # NEW: 蒸馏损失函数
     def distill_loss(self, student_out, teacher_out, labels, temp=3.0, alpha=0.7):
+        labels = labels.long()  
         teacher_probs = F.softmax(teacher_out / temp, dim=1)
         student_log_probs = F.log_softmax(student_out / temp, dim=1)
         kl_loss = F.kl_div(student_log_probs, teacher_probs, reduction='batchmean') * (temp**2)
