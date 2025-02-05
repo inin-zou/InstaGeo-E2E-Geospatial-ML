@@ -206,8 +206,11 @@ class TinyViT(nn.Module):
         x = self.patch_embed(img)  # 现在 img 形状是 `[B, C*T, H, W]`
         x = x.flatten(2).transpose(1, 2)  # (B, num_patches, embed_dim)
 
+        # **修正 `pos_embed` 形状**
+        pos_embed = self.pos_embed[:, : x.shape[1], :]
+
         # Add positional encoding
-        x = x + self.pos_embed
+        x = x + pos_embed  # 现在维度匹配
 
         # Transformer encoder
         for block in self.blocks:
@@ -224,6 +227,7 @@ class TinyViT(nn.Module):
         out = self.segmentation_head(x)  # (B, num_classes, H, W)
 
         return out
+
 
 
 
