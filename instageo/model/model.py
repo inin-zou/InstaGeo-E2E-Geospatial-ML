@@ -27,8 +27,11 @@ import numpy as np
 import requests  # type: ignore
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+
 import yaml  # type: ignore
 from absl import logging
+
 
 from instageo.model.Prithvi import ViTEncoder
 
@@ -156,50 +159,68 @@ class TinyViT(nn.Module):
                  embed_dim: int = 256, 
                  depth: int = 6,
                  num_heads: int = 8,
-                 image_size: int = 224,  # 需要支持 256x256
+                 image_size: int = 224,
                  patch_size: int = 16,
-                 num_classes: int = 2):  # 添加类别数
+                 num_classes: int = 21):  # 确保最终输出通道数等于类别数
         super().__init__()
         self.patch_size = patch_size
-        self.patch_embed = nn.Conv2d(3, embed_dim, kernel_size=patch_size, stride=patch_size)
+        self.num_patches = (image_size // patch_size) ** 2
+
+        # Patch Embedding
+        self.patch_embed = nn.Conv2d(6, embed_dim, kernel_size=patch_size, stride=patch_size)
+
+        # 位置编码
+        self.pos_embed = nn.Parameter(
+            torch.zeros(1, 3 * (image_size // patch_size) ** 2, embed_dim)
+        )
+
         
+        # Transformer Encoder Blocks
         self.blocks = nn.ModuleList([
-            Block(embed_dim, num_heads, mlp_ratio=4, qkv_bias=True) 
+            Block(embed_dim, num_heads, mlp_ratio=4, qkv_bias=True)  # 确保 Block 正确实现
             for _ in range(depth)
         ])
         
         self.norm = nn.LayerNorm(embed_dim)
-        self.pos_embed = nn.Parameter(torch.zeros(1, (image_size//patch_size)**2 + 1, embed_dim))
 
-        # 添加一个 1x1 卷积层，把 embed_dim 变成 num_classes（2 类）
-        self.head = nn.Conv2d(embed_dim, num_classes, kernel_size=1)
+        # 轻量级上采样模块（用于生成语义分割 mask）
+        self.segmentation_head = nn.Sequential(
+            nn.ConvTranspose2d(embed_dim, embed_dim // 2, kernel_size=3, stride=2, padding=1, output_padding=1),
+            nn.BatchNorm2d(embed_dim // 2),
+            nn.ReLU(),
+            nn.ConvTranspose2d(embed_dim // 2, embed_dim // 4, kernel_size=3, stride=2, padding=1, output_padding=1),
+            nn.BatchNorm2d(embed_dim // 4),
+            nn.ReLU(),
+            nn.Conv2d(embed_dim // 4, num_classes, kernel_size=1)  # 最终输出通道数等于类别数
+        )
 
-    def forward(self, x):
-        # 提取 patch
-        x = self.patch_embed(x)  # 变成 [batch, embed_dim, H/patch_size, W/patch_size]
-        
-        B, C, H, W = x.shape  # 获取当前 feature map 尺寸
-        x = x.flatten(2).transpose(1, 2)  # [batch, num_patches, embed_dim]
-        
-        x = x + self.pos_embed[:, :x.size(1), :]
-        
-        # 通过 Transformer blocks
-        for blk in self.blocks:
-            x = blk(x)
+    def forward(self, img: torch.Tensor) -> torch.Tensor:
+        """Forward pass for TinyViT student model."""
+        batch_size = img.shape[0]
 
-        # 归一化
+        # Patch embedding
+        x = self.patch_embed(img)  # (B, C, H/P, W/P)
+        x = x.flatten(2).transpose(1, 2)  # (B, num_patches, embed_dim)
+
+        # Add positional encoding
+        x = x + self.pos_embed
+
+        # Transformer encoder
+        for block in self.blocks:
+            x = block(x)
+
+        # Layer norm
         x = self.norm(x)
 
-        # 变回 CNN 格式
-        x = x.transpose(1, 2).view(B, C, H, W)  # 变回 [batch, embed_dim, H, W]
+        # Reshape回到图像空间
+        feature_size = int(self.num_patches ** 0.5)
+        x = x.permute(0, 2, 1).reshape(batch_size, -1, feature_size, feature_size)  # (B, embed_dim, H/P, W/P)
 
-        # 用 1x1 卷积映射到类别通道
-        x = self.head(x)  # 变成 [batch, num_classes, H, W]
+        # 上采样以匹配原始图像分辨率
+        out = self.segmentation_head(x)  # (B, num_classes, H, W)
 
-        # 上采样到 256x256
-        x = F.interpolate(x, size=(256, 256), mode="bilinear", align_corners=False)  # 确保输出大小
+        return out
 
-        return x  # 输出 [batch, num_classes, 256, 256]
 
 class PrithviSeg(nn.Module):
     """Prithvi Segmentation Model with Knowledge Distillation Support"""
@@ -223,6 +244,16 @@ class PrithviSeg(nn.Module):
             temporal_step, image_size, freeze_backbone
         )
         
+        # 确保 `self.model_args` 已正确赋值
+        decoder_embed_dim = self.model_args.get("decoder_embed_dim", 512)  # 默认 512
+        
+        # 解决 segmentation_head 未定义问题
+        self.segmentation_head = nn.Sequential(
+            *[self._upscaling_block(decoder_embed_dim // (2**i), 
+                                    decoder_embed_dim // (2**(i+1))) for i in range(4)],
+            nn.Conv2d(decoder_embed_dim // 16, self.num_classes, kernel_size=1)
+        )
+        
         # NEW: 初始化学生模型
         self.student = None
         if use_distill:
@@ -235,6 +266,7 @@ class PrithviSeg(nn.Module):
             }
             self.student = TinyViT(**student_args)
             self._init_distill_head(num_classes)
+            
             
     def _init_teacher(self, temporal_step, image_size, freeze_backbone):
         # [原有教师模型初始化代码，保持参数加载逻辑不变]
@@ -270,8 +302,9 @@ class PrithviSeg(nn.Module):
             if key.startswith("encoder.")
         }
         filtered_checkpoint_state_dict["pos_embed"] = torch.zeros(
-            1, (temporal_step * (image_size // 16) ** 2 + 1), 768
+            1, (temporal_step * (image_size // 16) ** 2 ), self.model_args["decoder_embed_dim"]
         )
+
         model.load_state_dict(filtered_checkpoint_state_dict)
         return model
 
@@ -299,28 +332,30 @@ class PrithviSeg(nn.Module):
 
         embed_dim = self.student.embed_dim if hasattr(self.student, 'embed_dim') else 256
         self.distill_head = nn.Sequential(
-            *[upscaling_block(embed_dim // (2**i), embed_dim // (2**(i+1))) for i in range(4)],
-            nn.Conv2d(embed_dim // 16, self.num_classes, kernel_size=1)  # 确保使用 self.num_classes
+            nn.Conv2d(embed_dim, 512, kernel_size=1),
+            *[upscaling_block(512 // (2**i), 512 // (2**(i+1))) for i in range(4)],
+            nn.Conv2d(512 // 16, self.num_classes, kernel_size=1)
         )
 
     # NEW: 蒸馏损失函数
     def distill_loss(self, student_out, teacher_out, labels, temp=3.0, alpha=0.7):
         labels = labels.long()  
-        teacher_probs = F.softmax(teacher_out / temp, dim=1)
-        student_log_probs = F.log_softmax(student_out / temp, dim=1)
+        teacher_probs = F.softmax(teacher_out / temp, dim=1)  # (B, num_classes, H, W)
+        student_log_probs = F.log_softmax(student_out / temp, dim=1)  # (B, num_classes, H, W)
+
+        # 计算 KL 散度
         kl_loss = F.kl_div(student_log_probs, teacher_probs, reduction='batchmean') * (temp**2)
+
+        # 交叉熵损失
         ce_loss = F.cross_entropy(student_out, labels)
+
         return alpha * kl_loss + (1 - alpha) * ce_loss
+
 
     def forward(self, img: torch.Tensor) -> torch.Tensor:
         if self.use_distill and self.student is not None:
             # 学生模式
             features = self.student(img)
-            features = features.permute(0, 2, 1).reshape(
-                img.size(0), -1, 
-                self.image_size//self.student.patch_size,
-                self.image_size//self.student.patch_size
-            )
             return self.distill_head(features)
         else:
             # 教师模式
@@ -338,7 +373,7 @@ class PrithviSeg(nn.Module):
     def quantize_model(self, dtype=torch.qint8):
         return torch.quantization.quantize_dynamic(
             self.student,
-            {nn.Linear, nn.Conv2d},
+            {nn.Linear},
             dtype=dtype
         )
 
@@ -348,7 +383,7 @@ class PrithviSeg(nn.Module):
         if model_part == 'teacher':
             for param in self.teacher.parameters():
                 param.requires_grad = requires_grad
-        elif model_part == 'student':
+        elif model_part == 'student' and self.student is not None:
             for param in self.student.parameters():
                 param.requires_grad = requires_grad
         elif model_part == 'distill_head':
@@ -357,7 +392,7 @@ class PrithviSeg(nn.Module):
 
     # NEW: 导出ONNX
     def export_onnx(self, student_model=True, output_path="model.onnx"):
-        dummy_input = torch.randn(1, 3, self.image_size, self.image_size)
+        dummy_input = torch.randn(1, 6, self.image_size, self.image_size)
         if student_model:
             torch.onnx.export(
                 self.student,
