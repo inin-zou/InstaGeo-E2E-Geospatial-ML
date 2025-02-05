@@ -247,6 +247,7 @@ class PrithviSegmentationModule(pl.LightningModule):
         inputs, labels = batch
         
         if self.global_step == 0:  # 只在第一步时打印
+            print(f"Training Step - Student Output shape: {student_out.shape}")
             print(f"Training Step - Labels dtype: {labels.dtype}, shape: {labels.shape}")
             print(f"Training Step - Labels unique values: {torch.unique(labels)}")
 
