@@ -169,9 +169,13 @@ class TinyViT(nn.Module):
         self.pos_embed = nn.Parameter(torch.zeros(1, (image_size//patch_size)**2 + 1, embed_dim))
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.patch_embed(x)  # [B, C, H/p, W/p]
-        x = x.flatten(2).transpose(1, 2)  # [B, L, C]
-        x = x + self.pos_embed[:, 1:, :]
+        # 如果输入为 5D，则只取第一个时间帧
+        if x.ndim == 5:
+            # x shape: [B, T, C, H, W] → 选择第一个帧 → [B, C, H, W]
+            x = x[:, 0, :, :, :]
+        x = self.patch_embed(x)  # 输出形状 [B, embed_dim, H/patch_size, W/patch_size]
+        x = x.flatten(2).transpose(1, 2)  # 转换为 [B, L, embed_dim], L = (H/patch_size)*(W/patch_size)
+        x = x + self.pos_embed[:, 1:, :]   # 加上位置嵌入（忽略分类 token）
         for blk in self.blocks:
             x = blk(x)
         return self.norm(x)
