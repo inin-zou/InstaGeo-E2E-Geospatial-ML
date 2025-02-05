@@ -198,8 +198,12 @@ class TinyViT(nn.Module):
         """Forward pass for TinyViT student model."""
         batch_size = img.shape[0]
 
+        # 处理 `num_frames` 维度，将 `[B, C, T, H, W]` 变为 `[B, C*T, H, W]`
+        if img.ndim == 5:
+            img = img.view(batch_size, -1, img.shape[3], img.shape[4])  # `[B, C*T, H, W]`
+
         # Patch embedding
-        x = self.patch_embed(img)  # (B, C, H/P, W/P)
+        x = self.patch_embed(img)  # 现在 img 形状是 `[B, C*T, H, W]`
         x = x.flatten(2).transpose(1, 2)  # (B, num_patches, embed_dim)
 
         # Add positional encoding
@@ -220,6 +224,7 @@ class TinyViT(nn.Module):
         out = self.segmentation_head(x)  # (B, num_classes, H, W)
 
         return out
+
 
 
 class PrithviSeg(nn.Module):
