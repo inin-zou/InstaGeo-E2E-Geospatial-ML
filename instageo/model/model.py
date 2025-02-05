@@ -193,6 +193,7 @@ class PrithviSeg(nn.Module):
         student_config: Optional[dict] = None,
     ):
         super().__init__()
+        self.num_classes = num_classes
         self.use_distill = use_distill
         self.image_size = image_size
         
@@ -277,8 +278,8 @@ class PrithviSeg(nn.Module):
 
         embed_dim = self.student.embed_dim if hasattr(self.student, 'embed_dim') else 256
         self.distill_head = nn.Sequential(
-            *[upscaling_block(embed_dim//(2**i), embed_dim//(2**(i+1))) for i in range(4)],
-            nn.Conv2d(embed_dim//16, num_classes, kernel_size=1)
+            *[upscaling_block(embed_dim // (2**i), embed_dim // (2**(i+1))) for i in range(4)],
+            nn.Conv2d(embed_dim // 16, self.num_classes, kernel_size=1)  # 确保使用 self.num_classes
         )
 
     # NEW: 蒸馏损失函数
