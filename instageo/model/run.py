@@ -195,9 +195,10 @@ class PrithviSegmentationModule(pl.LightningModule):
         # ==== 初始化损失函数 ====
         self._init_loss_fn(class_weights, ignore_index)
         
-        weight_tensor = torch.tensor(class_weights).float() if class_weights else None
+        weight_tensor = torch.tensor(class_weights, dtype=torch.float32) if class_weights else None
         self.criterion = nn.CrossEntropyLoss(
-            ignore_index=ignore_index, weight=weight_tensor
+            ignore_index=ignore_index, 
+            weight=weight_tensor if weight_tensor is None else weight_tensor.to(self.device)
         )
         self.learning_rate = learning_rate
         self.ignore_index = ignore_index
@@ -209,19 +210,19 @@ class PrithviSegmentationModule(pl.LightningModule):
         return self.distill_config.get('enable', False)
 
     def _init_loss_fn(self, class_weights, ignore_index):
+        weight_tensor = torch.tensor(class_weights, dtype=torch.float32) if class_weights else None
         if self.distill_enabled:
-            # 教师模型损失
             self.teacher_criterion = nn.CrossEntropyLoss(
                 ignore_index=ignore_index, 
-                weight=torch.tensor(class_weights) if class_weights else None
+                weight=weight_tensor if weight_tensor is None else weight_tensor.to(self.device)
             )
-            # 蒸馏损失
             self.distill_criterion = self._create_distill_loss()
         else:
             self.criterion = nn.CrossEntropyLoss(
                 ignore_index=ignore_index, 
-                weight=torch.tensor(class_weights) if class_weights else None
+                weight=weight_tensor if weight_tensor is None else weight_tensor.to(self.device)
             )
+
 
     def _create_distill_loss(self):
         temp = self.distill_config.get('temperature', 3.0)
