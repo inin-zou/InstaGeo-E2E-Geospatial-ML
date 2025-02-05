@@ -279,13 +279,23 @@ class PrithviSegmentationModule(pl.LightningModule):
             torch.Tensor: The loss value for the batch.
         """
         inputs, labels = batch
+        
+        # 确保 labels 是 int64 类型
+        labels = labels.to(torch.int64)  # 确保是整数索引，不是 float
+
+        # 选择使用蒸馏模型或普通模型
         if self.distill_enabled:
             outputs = self.net.student(inputs)
         else:
             outputs = self.net(inputs)
-        loss = self.criterion(outputs, labels.long())
+
+        # 计算损失
+        loss = self.criterion(outputs, labels) 
+
+        # 记录指标
         self.log_metrics(outputs, labels, "val", loss)
         return loss
+
 
     def test_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
         """Perform a test step.
