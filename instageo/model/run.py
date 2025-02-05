@@ -246,16 +246,15 @@ class PrithviSegmentationModule(pl.LightningModule):
     def training_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
         inputs, labels = batch
 
-        labels = labels.to(torch.int64)
+        # 调整标签维度和类型
+        labels = labels.squeeze().to(torch.int64)  # 确保标签是1D LongTensor
 
         if self.distill_enabled:
-            # ==== 蒸馏训练模式 ====
             with torch.no_grad():
                 teacher_out = self.net.teacher(inputs)
             student_out = self.net(inputs)
             loss = self.distill_criterion(student_out, teacher_out, labels)
         else:
-             # ==== 常规训练模式 ====
             outputs = self.net(inputs)
             loss = self.criterion(outputs, labels)
 
@@ -281,20 +280,16 @@ class PrithviSegmentationModule(pl.LightningModule):
             torch.Tensor: The loss value for the batch.
         """
         inputs, labels = batch
-        
-        # 确保 labels 是 torch.int64
-        labels = labels.to(torch.int64)
 
-        # 选择模型输出
+        # 调整标签维度和类型
+        labels = labels.squeeze().to(torch.int64)  # 确保标签是1D LongTensor
+
         if self.distill_enabled:
             outputs = self.net.student(inputs)
         else:
             outputs = self.net(inputs)
 
-        # 确保 outputs 是 raw logits，不做 softmax
         loss = self.criterion(outputs, labels)
-
-        # 记录日志
         self.log_metrics(outputs, labels, "val", loss)
         return loss
 
