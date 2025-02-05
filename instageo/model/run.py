@@ -258,6 +258,7 @@ class PrithviSegmentationModule(pl.LightningModule):
             with torch.no_grad():
                 teacher_out = self.net.teacher(inputs)
             student_out = self.net(inputs)
+            print(f"Student Output shape: {student_out.shape}")
             loss = self.distill_criterion(student_out, teacher_out, labels)
         else:
             outputs = self.net(inputs)
@@ -298,6 +299,7 @@ class PrithviSegmentationModule(pl.LightningModule):
             outputs = self.net.student(inputs)
         else:
             outputs = self.net(inputs)
+            print(f"Student Output shape: {outputs.shape}")
 
         loss = self.criterion(outputs, labels)
         self.log_metrics(outputs, labels, "val", loss)
