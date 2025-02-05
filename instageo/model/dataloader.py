@@ -224,19 +224,6 @@ def get_raster_data(
     mask_cloud: bool = True,
     water_mask: bool = False,
 ) -> np.ndarray:
-    """Load and process raster data from a file.
-
-    Args:
-        fname (str): Filename to load data from.
-        is_label (bool): Whether the file is a label file.
-        bands (List[int]): Index of bands to select from array.
-        no_data_value (int | None): NODATA value in image raster.
-        mask_cloud (bool): Perform cloud masking.
-        water_mask (bool): Perform water masking.
-
-    Returns:
-        np.ndarray: Numpy array representing the processed data.
-    """
     if isinstance(fname, dict):
         data, mask, crs = open_mf_tiff_dataset(fname, load_masks=False)
         data = data.fillna(no_data_value)
@@ -246,15 +233,16 @@ def get_raster_data(
             data = src.read()
     if (not is_label) and bands:
         data = data[bands, ...]
-    # For some reasons, some few HLS tiles are not scaled in v2.0.
-    # In the following lines, we find and scale them
-    bands = []
+    processed_bands = []
     for band in data:
         if band.max() > 10:
+            # 先转换为 float32，再进行原地乘法操作
+            band = band.astype(np.float32)
             band *= 0.0001
-        bands.append(band)
-    data = np.stack(bands, axis=0)
+        processed_bands.append(band)
+    data = np.stack(processed_bands, axis=0)
     return data
+
 
 
 def process_data(
