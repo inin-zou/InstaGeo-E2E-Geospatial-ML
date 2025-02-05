@@ -194,12 +194,6 @@ class PrithviSegmentationModule(pl.LightningModule):
         )
         # ==== 初始化损失函数 ====
         self._init_loss_fn(class_weights, ignore_index)
-        
-        weight_tensor = torch.tensor(class_weights, dtype=torch.float32) if class_weights else None
-        self.criterion = nn.CrossEntropyLoss(
-            ignore_index=ignore_index, 
-            weight=weight_tensor if weight_tensor is None else weight_tensor.to(self.device)
-        )
         self.learning_rate = learning_rate
         self.ignore_index = ignore_index
         self.weight_decay = weight_decay
@@ -209,18 +203,36 @@ class PrithviSegmentationModule(pl.LightningModule):
     def distill_enabled(self) -> bool:
         return self.distill_config.get('enable', False)
 
+            
     def _init_loss_fn(self, class_weights, ignore_index):
-        weight_tensor = torch.tensor(class_weights, dtype=torch.float32) if class_weights else None
+        # 检查 class_weights 长度是否匹配类别数
+        if class_weights and len(class_weights) != self.net.num_classes:
+            raise ValueError(
+                f"class_weights length ({len(class_weights)}) must match num_classes ({self.net.num_classes})"
+            )
+
+        # 初始化权重张量（确保设备一致）
+        weight_tensor = None
+        if class_weights:
+            weight_tensor = torch.tensor(class_weights, dtype=torch.float32)
+            weight_tensor = weight_tensor.to(self.device)  # 显式移动到模型设备
+
+        # 所有损失函数共享同一权重配置
         if self.distill_enabled:
             self.teacher_criterion = nn.CrossEntropyLoss(
                 ignore_index=ignore_index, 
-                weight=weight_tensor if weight_tensor is None else weight_tensor.to(self.device)
+                weight=weight_tensor
             )
-            self.distill_criterion = self._create_distill_loss()
+            # 学生模型使用相同的权重
+            self.student_criterion = nn.CrossEntropyLoss(
+                ignore_index=ignore_index,
+                weight=weight_tensor
+            )
+            self.distill_criterion = self.distill_loss  # 绑定蒸馏损失函数
         else:
             self.criterion = nn.CrossEntropyLoss(
                 ignore_index=ignore_index, 
-                weight=weight_tensor if weight_tensor is None else weight_tensor.to(self.device)
+                weight=weight_tensor
             )
 
 
@@ -247,11 +259,9 @@ class PrithviSegmentationModule(pl.LightningModule):
     def training_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
         inputs, labels = batch
         
-        if self.global_step == 0:  # 只在第一步时打印
-            print(f"Training Step - Student Output shape: {student_out.shape}")
-            print(f"Training Step - Labels dtype: {labels.dtype}, shape: {labels.shape}")
-            print(f"Training Step - Labels unique values: {torch.unique(labels)}")
-
+        if self.global_step == 0 and self.distill_enabled:
+            print(f"[DEBUG] Teacher Loss Weight: {self.teacher_criterion.weight}")
+            print(f"[DEBUG] Student Loss Weight: {self.student_criterion.weight}")
         # 调整标签维度和类型
         labels = labels.long()  # 确保数据类型正确
 
@@ -286,23 +296,18 @@ class PrithviSegmentationModule(pl.LightningModule):
         Returns:
             torch.Tensor: The loss value for the batch.
         """
+
         inputs, labels = batch
-        
-        if self.global_step == 0:  # 只在第一步时打印
-            print(f"Training Step - Labels dtype: {labels.dtype}, shape: {labels.shape}")
-            print(f"Training Step - Labels unique values: {torch.unique(labels)}")
-
-        # 调整标签维度和类型
-        labels = labels.long()  # 确保数据类型正确
-
+        labels = labels.long()
 
         if self.distill_enabled:
             outputs = self.net.student(inputs)
+            # 使用学生模型的损失函数（带权重）
+            loss = self.student_criterion(outputs, labels)
         else:
             outputs = self.net(inputs)
-            print(f"Student Output shape: {outputs.shape}")
+            loss = self.criterion(outputs, labels)
 
-        loss = self.criterion(outputs, labels)
         self.log_metrics(outputs, labels, "val", loss)
         return loss
 

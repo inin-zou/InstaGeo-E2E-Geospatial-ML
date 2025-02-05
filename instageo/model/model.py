@@ -367,18 +367,22 @@ class PrithviSeg(nn.Module):
             *[upscaling_block(512 // (2**i), 512 // (2**(i+1))) for i in range(4)],
             nn.Conv2d(512 // 16, self.num_classes, kernel_size=1)
         )
-
+    
     # NEW: 蒸馏损失函数
     def distill_loss(self, student_out, teacher_out, labels, temp=3.0, alpha=0.7):
-        labels = labels.long()  
-        teacher_probs = F.softmax(teacher_out / temp, dim=1)  # (B, num_classes, H, W)
-        student_log_probs = F.log_softmax(student_out / temp, dim=1)  # (B, num_classes, H, W)
+        labels = labels.long()
+        teacher_probs = F.softmax(teacher_out / temp, dim=1)
+        student_log_probs = F.log_softmax(student_out / temp, dim=1)
 
-        # 计算 KL 散度
+        # KL 散度
         kl_loss = F.kl_div(student_log_probs, teacher_probs, reduction='batchmean') * (temp**2)
 
-        # 交叉熵损失
-        ce_loss = F.cross_entropy(student_out, labels)
+        # 交叉熵损失（显式传递权重）
+        ce_loss = F.cross_entropy(
+            student_out, 
+            labels, 
+            weight=self.teacher_criterion.weight  # 使用教师模型的权重
+        )
 
         return alpha * kl_loss + (1 - alpha) * ce_loss
 
