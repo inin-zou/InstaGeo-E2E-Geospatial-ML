@@ -116,6 +116,39 @@ class Norm2D(nn.Module):
         x = x.permute(0, 3, 1, 2).contiguous()
         return x
 
+class Block(nn.Module):
+    """
+    一个简单的 Transformer 块，用于 TinyViT 模型。
+    包含：LayerNorm -> MultiheadAttention -> 残差连接 -> LayerNorm -> MLP -> 残差连接
+    """
+    def __init__(self, embed_dim: int, num_heads: int, mlp_ratio: float = 4, qkv_bias: bool = True):
+        super(Block, self).__init__()
+        self.norm1 = nn.LayerNorm(embed_dim)
+        self.attn = nn.MultiheadAttention(embed_dim, num_heads, bias=qkv_bias)
+        self.norm2 = nn.LayerNorm(embed_dim)
+        hidden_dim = int(embed_dim * mlp_ratio)
+        self.mlp = nn.Sequential(
+            nn.Linear(embed_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, embed_dim)
+        )
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # 假设输入 x 的形状为 [B, L, C]，这里需要将其转置为 [L, B, C] 以符合 MultiheadAttention 的要求
+        residual = x
+        x = self.norm1(x)
+        x = x.transpose(0, 1)  # [L, B, C]
+        attn_output, _ = self.attn(x, x, x)
+        x = attn_output.transpose(0, 1)  # 转回 [B, L, C]
+        x = x + residual  # 残差连接
+
+        residual = x
+        x = self.norm2(x)
+        x = self.mlp(x)
+        x = x + residual  # 残差连接
+        return x
+
+
 # NEW: 轻量级学生模型
 class TinyViT(nn.Module):
     """Lightweight ViT for knowledge distillation"""
