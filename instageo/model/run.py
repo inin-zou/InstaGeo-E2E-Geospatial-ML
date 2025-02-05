@@ -245,6 +245,10 @@ class PrithviSegmentationModule(pl.LightningModule):
 
     def training_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
         inputs, labels = batch
+        
+        if self.global_step == 0:  # 只在第一步时打印
+            print(f"Training Step - Labels dtype: {labels.dtype}, shape: {labels.shape}")
+            print(f"Training Step - Labels unique values: {torch.unique(labels)}")
 
         # 调整标签维度和类型
         labels = labels.squeeze().to(torch.int64)  # 确保标签是1D LongTensor
@@ -280,6 +284,10 @@ class PrithviSegmentationModule(pl.LightningModule):
             torch.Tensor: The loss value for the batch.
         """
         inputs, labels = batch
+        
+        if self.global_step == 0:  # 只在第一步时打印
+            print(f"Training Step - Labels dtype: {labels.dtype}, shape: {labels.shape}")
+            print(f"Training Step - Labels unique values: {torch.unique(labels)}")
 
         # 调整标签维度和类型
         labels = labels.squeeze().to(torch.int64)  # 确保标签是1D LongTensor
