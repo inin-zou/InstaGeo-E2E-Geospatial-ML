@@ -160,7 +160,7 @@ class PrithviSegmentationModule(pl.LightningModule):
         num_classes: int = 2,
         temporal_step: int = 1,
         class_weights: List[float] = [1, 2],
-        ignore_index: int = -100,
+        ignore_index: int = -1,
         weight_decay: float = 1e-2,
         # ==== 新增蒸馏参数 ====
         distill_config: Optional[dict] = None,
@@ -197,7 +197,7 @@ class PrithviSegmentationModule(pl.LightningModule):
         
         weight_tensor = torch.tensor(class_weights).float() if class_weights else None
         self.criterion = nn.CrossEntropyLoss(
-            ignore_index=-1, weight=weight_tensor
+            ignore_index=ignore_index, weight=weight_tensor
         )
         self.learning_rate = learning_rate
         self.ignore_index = ignore_index
