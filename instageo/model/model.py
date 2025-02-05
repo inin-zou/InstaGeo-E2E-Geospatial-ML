@@ -301,8 +301,9 @@ class PrithviSeg(nn.Module):
             for key, value in checkpoint.items()
             if key.startswith("encoder.")
         }
+
         filtered_checkpoint_state_dict["pos_embed"] = torch.zeros(
-            1, (temporal_step * (image_size // 16) ** 2 ), self.model_args["decoder_embed_dim"]
+            1, (temporal_step * (image_size // 16) ** 2) + 1, self.model_args["embed_dim"]
         )
 
         model.load_state_dict(filtered_checkpoint_state_dict)
