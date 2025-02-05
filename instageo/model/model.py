@@ -247,6 +247,7 @@ class PrithviSeg(nn.Module):
         # 确保 `self.model_args` 已正确赋值
         decoder_embed_dim = self.model_args.get("decoder_embed_dim", 512)  # 默认 512
         
+        
         # 解决 segmentation_head 未定义问题
         self.segmentation_head = nn.Sequential(
             *[self._upscaling_block(decoder_embed_dim // (2**i), 
@@ -267,6 +268,26 @@ class PrithviSeg(nn.Module):
             self.student = TinyViT(**student_args)
             self._init_distill_head(num_classes)
             
+    def _upscaling_block(self, in_channels: int, out_channels: int) -> nn.Module:
+        """上采样模块"""
+        return nn.Sequential(
+            nn.ConvTranspose2d(
+                in_channels=in_channels,
+                out_channels=out_channels,
+                kernel_size=3,
+                stride=2,
+                padding=1,
+                output_padding=1,
+            ),
+            nn.Conv2d(
+                in_channels=out_channels,
+                out_channels=out_channels,
+                kernel_size=3,
+                padding=1,
+            ),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(),
+        )        
             
     def _init_teacher(self, temporal_step, image_size, freeze_backbone):
         # [原有教师模型初始化代码，保持参数加载逻辑不变]
